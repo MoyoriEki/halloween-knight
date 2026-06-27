@@ -15,7 +15,8 @@ import { scaledStyle } from './uiScale.jsx';
  *   onStart      — 出撃ボタン
  */
 export default function DeployUI({ roster, deployCount, sortieLimit, deploySelId, onSelect, onStart }) {
-  const canStart = deployCount >= sortieLimit;
+  // 試遊用: 1体でも配置済みなら出撃可（上限は sortieLimit）
+  const canStart = deployCount >= 1;
 
   return (
     <div

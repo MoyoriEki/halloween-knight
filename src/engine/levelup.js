@@ -1,7 +1,8 @@
 // ═══ 経験値・レベルアップ・成長率 ═══
 import { EXP_PER_HIT, EXP_NEXT, LEVEL_CAP } from './constants.js';
-import { getClassData } from './units.js';
+import { getClassData, createPlayerUnit, resetUid } from './units.js';
 import { collectEffects, applyCounterGen } from './skills.js';
+import unitsJson from '../data/units.json';
 
 // レベル差による経験値倍率
 function expLvMod(playerLv, enemyLv) {
@@ -110,6 +111,31 @@ export function atClassLevelCap(unit) {
   if (tier === '中級') return classLevel >= 5;
   if (tier === '上級') return classLevel >= 3;
   return false;
+}
+
+// ═══ 試遊用: 指定レベルまで即席で育てる ═══
+// charDef（units.json の1エントリ）を level まで決定論的に育てた戦闘可能ユニットを返す。
+// 成長は既存の applyLevelUp（クラス依存の固定成長率＋端数蓄積・切り捨て）をそのまま使うので、
+// 同じ charDef × 同じ level なら毎回同じステータスになる。元データは破壊しない。
+// charDef.testLevel があればそちらを優先（ユニット個別レベル上書きの余地）。
+export function instantiateAtLevel(charDef, level = 1) {
+  let u = createPlayerUnit(charDef);
+  const target = Math.max(1, Math.min(charDef.testLevel ?? level ?? 1, LEVEL_CAP));
+  while (u.level < target) {
+    // applyLevelUp は exp -= expNext() するので、消費分を先に積んでおく
+    u.exp = expNext();
+    const { unit } = applyLevelUp(u);
+    u = unit;
+  }
+  u.exp = 0; // 端数 exp はクリア（次レベルへの持ち越しを残さない）
+  return u;
+}
+
+// 試遊ロスター生成: units.json の全キャラを level まで育てて返す。
+// uid を採番し直すので、敵生成（createEnemiesFromMap は uid=100 起点）と衝突しない。
+export function createTestRoster(level = 1) {
+  resetUid(0);
+  return unitsJson.map(c => instantiateAtLevel(c, level));
 }
 
 // 現在のクラス内レベル算出
