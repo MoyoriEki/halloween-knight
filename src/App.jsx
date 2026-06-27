@@ -1,11 +1,10 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
-  TILE, GW, GH, STEP_MS, NUM_STAGES, PARTY_MAX,
-  INITIAL_SORTIE, HP_RECOVERY_PCT, LEVEL_CAP, COUNTER_DEFS,
+  TILE, GW, GH, STEP_MS, PARTY_MAX,
   MAP_ZOOM_MOBILE,
 } from './engine/constants.js';
 import {
-  createRoster, createEnemiesFromMap, createEnemyUnit, createMinion, resetUid,
+  createEnemiesFromMap, createEnemyUnit, createMinion, resetUid,
   effectiveAtk, effectiveDef, effectiveInt, getATK, getSlots,
 } from './engine/units.js';
 import {
@@ -18,13 +17,12 @@ import {
 import { loadMap, getMap, getCols, getRows, getDeployZone, getTerrainDef, pickupItemBox, destroyItemBoxesByEnemies, isInZone, getOnStayEffects } from './engine/map.js';
 import { checkEvents, executeEvent } from './engine/events.js';
 import { decideAction, aiSortEnemies } from './engine/ai.js';
-import { awardExp, applyLevelUp, canLevelUp, expNext } from './engine/levelup.js';
-import { rollParts, applyPart, swapPart } from './engine/draft.js';
-import { getCCOptions, applyCC } from './engine/classChange.js';
+import { awardExp, applyLevelUp, canLevelUp, expNext, createTestRoster } from './engine/levelup.js';
 import { dispatchTurnStart, getTrait, dispatchTurnEnd, getTraitEffects, applyCounterGen } from './engine/skills.js';
 import { isStunned, calcCounterHit } from './engine/debuff.js';
 import { playBGM, stopBGM } from './engine/audio.js';
 import itemsData from './data/items.json';
+import { getMapList } from './maps/index.js';
 
 import ScreenScaler from './ui/ScreenScaler.jsx';
 import useMapZoom from './ui/useMapZoom.js';
@@ -33,47 +31,38 @@ import ZoomToggle from './ui/ZoomToggle.jsx';
 import MapView from './ui/MapView.jsx';
 import LogPanel from './ui/LogPanel.jsx';
 import { ActionMenu, BattlePreview, ContextMenu } from './ui/BattleUI.jsx';
-import DraftUI from './ui/DraftUI.jsx';
 import DeployUI from './ui/DeployUI.jsx';
-import IntervalUI from './ui/IntervalUI.jsx';
 import StatusScreen from './ui/StatusScreen.jsx';
-import RecruitUI from './ui/RecruitUI.jsx';
+import MapSelectUI from './ui/MapSelectUI.jsx';
 
-import mapM1 from './maps/m1.json';
-import mapM2 from './maps/m2.json';
-
-// ─── お祭りテスト（デバッグ編成投入口・使い捨て） ───
-import { buildFestivalUnits } from './debug/festival.js';
-import festivalMap from './maps/festival.json';
-
-// 6ステージ分のマップ配列（M3-M6は暫定でM1/M2を使い回し）
-const STAGE_MAPS = [mapM1, mapM2, mapM1, mapM2, mapM1, mapM2];
-
-// お祭りテスト起動判定: URL に ?festival / ?fest、または window.__festival=true
-const FESTIVAL_MODE = typeof window !== 'undefined' && (() => {
-  try {
-    const q = new URLSearchParams(window.location.search);
-    return q.has('festival') || q.has('fest') || window.__festival === true;
-  } catch { return false; }
-})();
+// 試遊できるマップ一覧（Phase 0: 単発試遊）
+const MAP_LIST = getMapList();
 
 // ════════════════════════════════════════════
 // sleep helper
 // ════════════════════════════════════════════
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// 結果画面のボタン共通スタイル
+const resultBtnStyle = (c1, c2) => ({
+  padding: '10px 28px', fontSize: 15, fontWeight: 700,
+  background: `linear-gradient(135deg,${c1},${c2})`,
+  color: '#fff', border: 'none', borderRadius: 6,
+  cursor: 'pointer', letterSpacing: 2, fontFamily: 'inherit',
+});
+
 // ════════════════════════════════════════════
 // App
 // ════════════════════════════════════════════
 export default function App() {
   // --- ゲーム状態 ---
-  const [stage, setStage]         = useState(0);
-  const [phase, setPhase]         = useState('deploy'); // deploy | player | enemy | stageClear | interval
+  const [selectedMap, setSelectedMap] = useState(null); // { id, name, testLevel, data, ... }
+  const [phase, setPhase]         = useState('mapSelect'); // mapSelect | deploy | player | enemy
   const [turn, setTurn]           = useState(1);
   const [units, setUnits]         = useState([]);
   const [roster, setRoster]       = useState([]); // 味方全員（配置前）
   const [log, setLog]             = useState([]);
-  const [gameOver, setGameOver]   = useState(null); // null | 'stageClear' | 'defeat' | 'loopClear'
+  const [gameOver, setGameOver]   = useState(null); // null | 'stageClear' | 'defeat'
 
   // --- 選択・UI ---
   const [selId, setSelId]         = useState(null);
@@ -103,22 +92,9 @@ export default function App() {
 
   // --- モーダル ---
   const [statScreen, setStatScreen] = useState(null);
-  const [pendingLvUp, setPendingLvUp] = useState(null);
-  // { unit, gains, parts, ccOptions }
 
   // --- 配置 ---
   const [deploySelId, setDeploySelId] = useState(null);
-
-  // --- CC（インターバル） ---
-  const [ccQueue, setCcQueue]     = useState([]); // CC対象ユニットIDの配列
-  const [ccCurrent, setCcCurrent] = useState(null); // { unit, ccOptions, draftParts }
-  // CC対象ステージ: stage=1(M2後)→中級, stage=3(M4後)→上級
-  const CC_STAGES = { 1: 'mid', 3: 'adv' };
-
-  // --- 合流 ---
-  const [fullPool, setFullPool]         = useState([]);
-  const [recruitPhase, setRecruitPhase] = useState(null);
-  // { candidates: Unit[], picked: string[] }
 
   // --- busy ---
   const busyRef = useRef(false);
@@ -172,20 +148,8 @@ export default function App() {
   // ════════════════════════════════════════════
   useEffect(() => {
     resetUid(0);
-    // お祭りテスト: ドラフト/CC/配置をスキップして育成済み8体を直置き
-    if (FESTIVAL_MODE) {
-      const festUnits = buildFestivalUnits();
-      setFullPool(festUnits);
-      setRoster(festUnits);
-      startFestivalStage(festUnits);
-      return;
-    }
-    const allRoster = createRoster(); // 13人全員
-    setFullPool(allRoster);
-    const shuffled = [...allRoster].sort(() => Math.random() - 0.5);
-    const initial = shuffled.slice(0, INITIAL_SORTIE); // 6人
-    setRoster(initial);
-    initStage(0, initial);
+    // Phase 0: 起動時はマップ選択画面から（周回・抽選なし）
+    playBGM('title');
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // マーキング自動再計算（敵死亡時など）
@@ -200,8 +164,6 @@ export default function App() {
   debugRef.current.handleLevelUp = handleLevelUp;
   debugRef.current.setUnits = setUnits;
   debugRef.current.setRoster = setRoster;
-  debugRef.current.setFullPool = setFullPool;
-  debugRef.current.startFestivalStage = startFestivalStage;
   if (!window.__debug) {
     window.__debug = {
       get units() { return debugRef.current.units; },
@@ -214,24 +176,27 @@ export default function App() {
         debugRef.current.setRoster(prev => prev.map(x => x.id === newUnit.id ? newUnit : x));
         console.log('レベルアップ完了:', newUnit.name, 'Lv', newUnit.level);
       },
-      // お祭りテスト面を即起動（?festival を付けなくても呼べる）
-      festival() {
-        const festUnits = buildFestivalUnits();
-        debugRef.current.setFullPool(festUnits);
-        debugRef.current.setRoster(festUnits);
-        debugRef.current.startFestivalStage(festUnits);
-        console.log('お祭りテスト面を開始:', festUnits.map(u => `${u.name}(${u.cls})`).join(', '));
-      },
     };
-    console.log('__debug 有効: __debug.levelUp("p0"), __debug.festival(), __debug.units');
+    console.log('__debug 有効: __debug.levelUp("p0"), __debug.units');
   }
 
-  function initStage(stageIdx, currentRoster) {
-    const mapData = STAGE_MAPS[stageIdx] || mapM1;
+  // ════════════════════════════════════════════
+  // マップ選択 → 試遊開始（Phase 0 の入口）
+  // 出撃候補を testLevel まで育てて配置フェーズへ
+  // ════════════════════════════════════════════
+  function handleSelectMap(mapInfo) {
+    const grown = createTestRoster(mapInfo.testLevel || 1);
+    setSelectedMap(mapInfo);
+    setRoster(grown);
+    startMap(mapInfo, grown);
+  }
+
+  function startMap(mapInfo, currentRoster) {
+    const mapData = mapInfo.data;
     loadMap(mapData);
 
     const enemies = createEnemiesFromMap(mapData);
-    // リセットプレイヤーユニットのacted/deployed
+    // プレイヤーユニットは未配置状態にリセット
     const players = (currentRoster || roster).map(u => ({
       ...u, acted: false, deployed: false, x: -1, y: -1,
     }));
@@ -240,39 +205,10 @@ export default function App() {
     setPhase('deploy');
     setTurn(1);
     setGameOver(null);
-    setLog([{ text: `── ステージ ${stageIdx + 1} 開始 ──`, type: 'phase' }]);
+    setLog([{ text: `── ${mapData.name || '試遊マップ'}（Lv${mapInfo.testLevel}）── `, type: 'phase' }]);
     clearSelection();
     const bgm = mapData.bgm || {};
     playBGM(bgm.default || 'map');
-  }
-
-  // ════════════════════════════════════════════
-  // お祭りテスト: 育成済み8体を直置きして即 player フェーズ
-  // （配置フェーズもスキップ。使い捨て・ボツ時はこの関数ごと削除）
-  // ════════════════════════════════════════════
-  function startFestivalStage(festRoster) {
-    loadMap(festivalMap);
-    const enemies = createEnemiesFromMap(festivalMap);
-    const dz = getDeployZone();
-    // デプロイゾーン先頭から順に直置き
-    const placed = festRoster.map((u, i) => {
-      const cell = dz[i] || dz[dz.length - 1] || { x: 1, y: 1 };
-      return { ...u, x: cell.x, y: cell.y, deployed: true, acted: false };
-    });
-    let all = [...placed, ...enemies];
-    // mapStartイベント（敵チャージ即発動など本番同様）
-    all = fireEvents('mapStart', { units: all }, all);
-    setUnits(all);
-    setStage(NUM_STAGES - 1); // クリア後は次面に進まずループクリア扱い
-    setTurn(1);
-    setGameOver(null);
-    setPhase('player');
-    setLog([{ text: '── お祭りテスト面 開始（デバッグ編成・運排除） ──', type: 'phase' }]);
-    clearSelection();
-    playBGM(festivalMap.bgm?.default || 'map');
-    showBanner('FESTIVAL', '#f59e0b', 1400);
-    // ターン開始スキル
-    all.filter(u => u.team === 'player' && u.hp > 0).forEach(u => dispatchTurnStart(u, all, []));
   }
 
   // ════════════════════════════════════════════
@@ -368,21 +304,25 @@ export default function App() {
     if (!dz.some(c => c.x === cx && c.y === cy)) return;
 
     if (deploySelId) {
-      // 配置実行
       setUnits(prev => {
-        const next = prev.map(u => {
-          if (u.id === deploySelId) return { ...u, x: cx, y: cy, deployed: true };
-          return u;
-        });
-        return next;
+        const sel = prev.find(u => u.id === deploySelId);
+        // 出撃上限チェック（未配置ユニットを新規に置く場合のみ）
+        if (sel && !sel.deployed) {
+          const deployedCount = prev.filter(u => u.team === 'player' && u.deployed).length;
+          if (deployedCount >= sortieLimit) return prev;
+        }
+        return prev.map(u =>
+          u.id === deploySelId ? { ...u, x: cx, y: cy, deployed: true } : u
+        );
       });
       setDeploySelId(null);
     }
   }
 
   function handleDeployStart() {
+    // 試遊用: 1体でも配置されていれば開始できる
     const deployed = units.filter(u => u.team === 'player' && u.deployed);
-    if (deployed.length < (stage === 0 ? INITIAL_SORTIE : PARTY_MAX)) return;
+    if (deployed.length < 1) return;
 
     // 未配置プレイヤーを除外
     let activeUnits = units.filter(u => u.team !== 'player' || u.deployed);
@@ -1133,45 +1073,17 @@ export default function App() {
   // ════════════════════════════════════════════
   // レベルアップ処理
   // ════════════════════════════════════════════
+  // Phase 0: ドラフト/CCは廃止。ステ成長のみを静かに適用する。
   async function handleLevelUp(u) {
     const { unit: lvUnit, gains } = applyLevelUp(u);
-
-    // CC判定は削除（CCはインターバルで行う）
-    const parts = rollParts(lvUnit);
-
-    return new Promise(resolve => {
-      setPendingLvUp({
-        unit: lvUnit, gains, parts, ccOptions: null,
-        resolve: (updatedUnit) => {
-          setPendingLvUp(null);
-          // ★ setUnitsは呼び出し元で一括管理する（Bug5修正: 競合防止）
-          resolve(updatedUnit);
-        },
-      });
-    });
-  }
-
-  function handlePickPart(part) {
-    if (!pendingLvUp) return;
-    if (!part) { pendingLvUp.resolve(pendingLvUp.unit); return; } // 獲得しない
-    const updated = applyPart(pendingLvUp.unit, part);
-    pendingLvUp.resolve(updated);
-  }
-
-  function handleSwapPart(removeName, newPart) {
-    if (!pendingLvUp) return;
-    const updated = swapPart(pendingLvUp.unit, removeName, newPart);
-    pendingLvUp.resolve(updated);
-  }
-
-  function handlePickCC(className) {
-    if (!pendingLvUp) return;
-    const updated = applyCC(pendingLvUp.unit, className);
-    // CC後ドラフト
-    const parts = rollParts(updated);
-    setPendingLvUp(prev => ({
-      ...prev, unit: updated, ccOptions: null, parts,
-    }));
+    showPop(lvUnit.id, 'Lv UP', 'exp');
+    addLog(`${lvUnit.name} は Lv${lvUnit.level} に上がった！`, 'exp');
+    const statParts = [];
+    for (const [s, label] of [['hp', 'HP'], ['str', 'STR'], ['def', 'DEF'], ['int', 'INT']]) {
+      if (gains[s]) statParts.push(`${label}+${gains[s]}`);
+    }
+    if (statParts.length) addLog(`  ${statParts.join(' ')}`, 'exp');
+    return lvUnit;
   }
 
   // ════════════════════════════════════════════
@@ -1452,180 +1364,27 @@ export default function App() {
   }
 
   // ════════════════════════════════════════════
-  // ステージ進行
+  // 結果 → マップ選択へ戻る（Phase 0: 周回ではなく単発→リセット）
   // ════════════════════════════════════════════
-  function advanceStage() {
-    if (stage >= NUM_STAGES - 1) {
-      setGameOver('loopClear');
-      playBGM('ending', { fade: 500 });
-      return;
-    }
-    const nextStage = stage + 1;
-
-    // HP回復 + 技回数回復 + 非永続カウンターリセット
-    const recovered = units.filter(u => u.team === 'player').map(u => {
-      // 非永続カウンターを除去
-      let counters = u._counters ? { ...u._counters } : undefined;
-      if (counters) {
-        for (const name of Object.keys(counters)) {
-          const def = COUNTER_DEFS[name];
-          if (!def || !def.persistent) delete counters[name];
-        }
-        if (Object.keys(counters).length === 0) counters = undefined;
-      }
-      return {
-        ...u,
-        hp: Math.min(u.maxHp, u.hp + Math.floor(u.maxHp * HP_RECOVERY_PCT)),
-        techs: u.techs.map(t => t.consumable || t.maxUses >= 99 ? t : { ...t, uses: t.maxUses }),
-        _counters: counters,
-      };
-    });
-    setRoster(recovered);
-    setUnits(recovered);
-    setStage(nextStage);
-    setGameOver(null);
-
-    // M1クリア後: 合流フェーズ
-    if (stage === 0 && fullPool.length > 0) {
-      const currentIds = recovered.map(u => u.id);
-      const remaining = fullPool.filter(u => !currentIds.includes(u.id));
-      const shuffled = [...remaining].sort(() => Math.random() - 0.5);
-      const candidates = shuffled.slice(0, 3);
-      // 合流キャラのレベルを2-3に
-      candidates.forEach(c => {
-        for (let i = 0; i < 2; i++) {
-          if (c.level < 3) {
-            const { unit } = applyLevelUp(c);
-            Object.assign(c, unit);
-          }
-        }
-      });
-      setRecruitPhase({ candidates, picked: [] });
-      setPhase('recruit');
-      return;
-    }
-
-    // CC対象ステージ判定
-    const ccType = CC_STAGES[stage];
-    if (ccType) {
-      const targets = recovered.filter(u => {
-        const opts = getCCOptions(u);
-        return opts && opts.type === ccType;
-      });
-      if (targets.length > 0) {
-        setCcQueue(targets.map(u => u.id));
-        // 最初のユニットのCC画面を出す
-        startCCForUnit(targets[0], recovered);
-      }
-    }
-
-    setPhase('interval');
-  }
-
-  function startCCForUnit(u, allUnits) {
-    const ccOpts = getCCOptions(u);
-    setCcCurrent({ unit: u, ccOptions: ccOpts, draftParts: null });
-  }
-
-  function handleIntervalCC(className) {
-    if (!ccCurrent) return;
-    const updated = applyCC(ccCurrent.unit, className);
-    // CC後特殊ドラフト
-    const parts = rollParts(updated);
-    setCcCurrent(prev => ({ ...prev, unit: updated, ccOptions: null, draftParts: parts }));
-  }
-
-  function handleIntervalCCDraft(part) {
-    if (!ccCurrent) return;
-    const updated = applyPart(ccCurrent.unit, part);
-    finishIntervalCCDraft(updated);
-  }
-
-  function handleIntervalCCSwap(removeName, newPart) {
-    if (!ccCurrent) return;
-    const updated = swapPart(ccCurrent.unit, removeName, newPart);
-    finishIntervalCCDraft(updated);
-  }
-
-  function finishIntervalCCDraft(updated) {
-    // ユニット更新
-    setRoster(prev => prev.map(u => u.id === updated.id ? updated : u));
-    setUnits(prev => prev.map(u => u.id === updated.id ? updated : u));
-
-    // 次のCC対象へ
-    const remaining = ccQueue.filter(id => id !== updated.id);
-    setCcQueue(remaining);
-
-    if (remaining.length > 0) {
-      const nextUnit = roster.find(u => u.id === remaining[0]) || units.find(u => u.id === remaining[0]);
-      if (nextUnit) {
-        startCCForUnit(nextUnit);
-      } else {
-        setCcCurrent(null);
-      }
-    } else {
-      setCcCurrent(null);
-    }
-  }
-
-  function handleRecruitToggle(uid) {
-    setRecruitPhase(prev => {
-      if (!prev) return prev;
-      const picked = prev.picked.includes(uid)
-        ? prev.picked.filter(id => id !== uid)
-        : prev.picked.length < 2 ? [...prev.picked, uid] : prev.picked;
-      return { ...prev, picked };
-    });
-  }
-
-  function handleRecruitConfirm() {
-    if (!recruitPhase || recruitPhase.picked.length !== 2) return;
-    const newMembers = recruitPhase.candidates.filter(u =>
-      recruitPhase.picked.includes(u.id)
-    );
-    const updatedRoster = [...roster, ...newMembers];
-
-    // HP回復 + 技回数回復 + 非永続カウンターリセットしてインターバルへ
-    const recovered = updatedRoster.map(u => {
-      let counters = u._counters ? { ...u._counters } : undefined;
-      if (counters) {
-        for (const name of Object.keys(counters)) {
-          const def = COUNTER_DEFS[name];
-          if (!def || !def.persistent) delete counters[name];
-        }
-        if (Object.keys(counters).length === 0) counters = undefined;
-      }
-      return {
-        ...u,
-        hp: Math.min(u.maxHp, u.hp + Math.floor(u.maxHp * HP_RECOVERY_PCT)),
-        techs: u.techs.map(t => t.consumable || t.maxUses >= 99 ? t : { ...t, uses: t.maxUses }),
-        _counters: counters,
-      };
-    });
-    setRoster(recovered);
-    setUnits(recovered);
-    setRecruitPhase(null);
-
-    setPhase('interval');
-  }
-
-  function handleIntervalNext() {
-    initStage(stage, roster);
-  }
-
-  function handleReset() {
+  function backToMapSelect() {
     resetUid(0);
-    const allRoster = createRoster();
-    setFullPool(allRoster);
-    const shuffled = [...allRoster].sort(() => Math.random() - 0.5);
-    const initial = shuffled.slice(0, INITIAL_SORTIE);
-    setRoster(initial);
-    setStage(0);
-    setCcQueue([]);
-    setCcCurrent(null);
-    setRecruitPhase(null);
-    initStage(0, initial);
+    setSelectedMap(null);
+    setRoster([]);
+    setUnits([]);
+    setGameOver(null);
+    setRangeEnemyIds([]);
+    setEnemyRanges([]);
+    setLog([]);
+    setTurn(1);
+    clearSelection();
+    setPhase('mapSelect');
     playBGM('title');
+  }
+
+  // 同じマップをもう一度（育成しなおして頭から）
+  function retryMap() {
+    if (!selectedMap) { backToMapSelect(); return; }
+    handleSelectMap(selectedMap);
   }
 
   // ════════════════════════════════════════════
@@ -1754,7 +1513,10 @@ export default function App() {
   // ════════════════════════════════════════════
   // 配置パラメータ
   // ════════════════════════════════════════════
-  const sortieLimit = stage === 0 ? INITIAL_SORTIE : PARTY_MAX;
+  const sortieLimit = Math.min(
+    selectedMap?.data?.sortieLimit || PARTY_MAX,
+    roster.length || PARTY_MAX,
+  );
   const deployCount = units.filter(u => u.team === 'player' && u.deployed).length;
   const deployZone = phase === 'deploy' ? getDeployZone() : [];
 
@@ -1801,7 +1563,7 @@ export default function App() {
       />
 
       {/* ログ */}
-      <LogPanel log={log} phase={phase} stage={stage} turn={turn} />
+      <LogPanel log={log} phase={phase} mapName={selectedMap?.name} turn={turn} />
 
       {/* マップ倍率トグル（右下） */}
       <ZoomToggle zoom={mapZoom} onToggle={toggleZoom} />
@@ -1858,47 +1620,12 @@ export default function App() {
         />
       )}
 
-      {/* ドラフト/CC */}
-      {pendingLvUp && (
-        <DraftUI
-          unit={pendingLvUp.unit}
-          gains={pendingLvUp.gains}
-          parts={pendingLvUp.parts}
-          ccOptions={pendingLvUp.ccOptions}
-          units={units}
-          onPickPart={handlePickPart}
-          onSwapPart={handleSwapPart}
-          onPickCC={handlePickCC}
-        />
+      {/* マップ選択（Phase 0 の入口） */}
+      {phase === 'mapSelect' && (
+        <MapSelectUI maps={MAP_LIST} onSelect={handleSelectMap} />
       )}
 
-      {/* インターバル */}
-      {phase === 'interval' && (
-        <IntervalUI
-          roster={roster}
-          stage={stage}
-          onNext={handleIntervalNext}
-          onUnitClick={u => setStatScreen(u)}
-          ccCurrent={ccCurrent}
-          ccQueue={ccQueue}
-          onCCSelect={handleIntervalCC}
-          onCCDraft={handleIntervalCCDraft}
-          onCCSwap={handleIntervalCCSwap}
-        />
-      )}
-
-      {/* 合流フェーズ */}
-      {phase === 'recruit' && recruitPhase && (
-        <RecruitUI
-          candidates={recruitPhase.candidates}
-          picked={recruitPhase.picked}
-          onToggle={handleRecruitToggle}
-          onConfirm={handleRecruitConfirm}
-          onUnitClick={u => setStatScreen(u)}
-        />
-      )}
-
-      {/* ─── ゲームオーバー画面 ─── */}
+      {/* ─── 結果画面（単発・周回なし） ─── */}
       {gameOver === 'stageClear' && (
         <div style={{
           position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.85)',
@@ -1909,17 +1636,17 @@ export default function App() {
               fontSize: 40, fontWeight: 900, letterSpacing: 6, color: '#4ade80',
               textShadow: '0 0 40px rgba(74,222,128,0.5)', marginBottom: 4,
             }}>STAGE CLEAR</div>
-            <div style={{ fontSize: 16, color: '#94a3b8', marginBottom: 16 }}>
-              ステージ {stage + 1} / {NUM_STAGES}
+            <div style={{ fontSize: 15, color: '#94a3b8', marginBottom: 18 }}>
+              {selectedMap?.name} — {turn}ターンで制圧
             </div>
-            <button onClick={advanceStage} style={{
-              padding: '10px 32px', fontSize: 15, fontWeight: 700,
-              background: 'linear-gradient(135deg,#22c55e,#16a34a)',
-              color: '#fff', border: 'none', borderRadius: 6,
-              cursor: 'pointer', letterSpacing: 2, fontFamily: 'inherit',
-            }}>
-              {stage >= NUM_STAGES - 1 ? '結果を見る' : '次のステージへ'}
-            </button>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+              <button onClick={retryMap} style={resultBtnStyle('#22c55e', '#16a34a')}>
+                もう一度
+              </button>
+              <button onClick={backToMapSelect} style={resultBtnStyle('#3b82f6', '#2563eb')}>
+                マップ選択へ
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1932,37 +1659,19 @@ export default function App() {
           <div style={{ textAlign: 'center', animation: 's-fin 0.5s ease-out' }}>
             <div style={{
               fontSize: 48, fontWeight: 900, letterSpacing: 8, color: '#ef4444',
-              textShadow: '0 0 40px rgba(239,68,68,0.5)', marginBottom: 16,
+              textShadow: '0 0 40px rgba(239,68,68,0.5)', marginBottom: 8,
             }}>DEFEAT</div>
-            <button onClick={handleReset} style={{
-              padding: '10px 32px', fontSize: 15, fontWeight: 700,
-              background: 'linear-gradient(135deg,#3b82f6,#2563eb)',
-              color: '#fff', border: 'none', borderRadius: 6,
-              cursor: 'pointer', letterSpacing: 2, fontFamily: 'inherit',
-            }}>最初からやり直す</button>
-          </div>
-        </div>
-      )}
-
-      {gameOver === 'loopClear' && (
-        <div style={{
-          position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.85)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300,
-        }}>
-          <div style={{ textAlign: 'center', animation: 's-fin 0.5s ease-out' }}>
-            <div style={{
-              fontSize: 52, fontWeight: 900, letterSpacing: 8, color: '#facc15',
-              textShadow: '0 0 60px rgba(250,204,21,0.5)', marginBottom: 8,
-            }}>LOOP CLEAR</div>
-            <div style={{ fontSize: 16, color: '#94a3b8', marginBottom: 16 }}>
-              全{NUM_STAGES}ステージ制覇
+            <div style={{ fontSize: 15, color: '#94a3b8', marginBottom: 18 }}>
+              {selectedMap?.name} — {turn}ターン目
             </div>
-            <button onClick={handleReset} style={{
-              padding: '10px 32px', fontSize: 15, fontWeight: 700,
-              background: 'linear-gradient(135deg,#facc15,#eab308)',
-              color: '#1a1f35', border: 'none', borderRadius: 6,
-              cursor: 'pointer', letterSpacing: 2, fontFamily: 'inherit',
-            }}>新しいループを開始</button>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+              <button onClick={retryMap} style={resultBtnStyle('#22c55e', '#16a34a')}>
+                もう一度
+              </button>
+              <button onClick={backToMapSelect} style={resultBtnStyle('#3b82f6', '#2563eb')}>
+                マップ選択へ
+              </button>
+            </div>
           </div>
         </div>
       )}

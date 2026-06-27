@@ -12,7 +12,7 @@ const TYPE_COLOR = {
   info:     '#475569',
 };
 
-export default function LogPanel({ log, phase, stage, turn }) {
+export default function LogPanel({ log, phase, mapName, turn }) {
   const ref = useRef(null);
   const [open, setOpen] = useState(false);
 
@@ -42,7 +42,7 @@ export default function LogPanel({ log, phase, stage, turn }) {
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         }}
       >
-        <span>S{stage + 1} T{turn} — {phaseLabel}</span>
+        <span>{mapName ? `${mapName} ` : ''}T{turn} — {phaseLabel}</span>
         <span style={{ fontSize: 10, color: '#475569' }}>{open ? '▲' : '▼'}</span>
       </div>
 
