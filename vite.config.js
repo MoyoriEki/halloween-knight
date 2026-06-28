@@ -4,8 +4,8 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 export default defineConfig({
-  // GitHub Pages の公開先 https://moyorieki.github.io/srpg1/ に合わせる
-  base: '/srpg1/',
+  // GitHub Pages の公開先 https://moyorieki.github.io/halloween-knight/ に合わせる
+  base: '/halloween-knight/',
   plugins: [react()],
   server: { port: 3000 },
   cacheDir: join(tmpdir(), 'srpg-proto-vite'),

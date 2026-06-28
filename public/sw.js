@@ -1,8 +1,8 @@
 // SRPG Proto PWA Service Worker
 // ナビゲーションは network-first（最新を取りつつオフラインでも起動）、
 // 静的アセットは cache-first でオフライン再生を可能にする。
-const VERSION = 'srpg-pwa-v1';
-const BASE = '/srpg1/';
+const VERSION = 'hk-pwa-v2';
+const BASE = '/halloween-knight/';
 const CORE = [BASE, BASE + 'manifest.webmanifest', BASE + 'icons/icon-192.png', BASE + 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {
