@@ -211,7 +211,7 @@ function EffectsPanel({effects,onChange,triggerOpts,triggerMap,counterNames}){
 
 // ── DataLoader ──
 // ── GitHub 連携設定 ──
-const GH={owner:'MoyoriEki',repo:'srpg1',branch:'main'};
+const GH={owner:'MoyoriEki',repo:'halloween-knight',branch:'main'};
 // データ取得元: github.io 上では raw.githubusercontent から、ローカルでは相対パスから
 const ON_PAGES=location.hostname.endsWith('github.io');
 const DATA_DIR=ON_PAGES?`https://raw.githubusercontent.com/${GH.owner}/${GH.repo}/${GH.branch}/src/data/`:'../src/data/';
