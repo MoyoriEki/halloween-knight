@@ -3,16 +3,16 @@
   "short_name": "SRPG Proto",
   "description": "グノーシア×FE×スレスパ コンセプトのローグライクSRPG",
   "lang": "ja",
-  "start_url": "/srpg1/",
-  "scope": "/srpg1/",
+  "start_url": "/halloween-knight/",
+  "scope": "/halloween-knight/",
   "display": "fullscreen",
   "display_override": ["fullscreen", "standalone"],
   "orientation": "landscape",
   "background_color": "#0a0e1e",
   "theme_color": "#0a0e1e",
   "icons": [
-    { "src": "/srpg1/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "/srpg1/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "/srpg1/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    { "src": "/halloween-knight/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/halloween-knight/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/halloween-knight/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ]
 }
